@@ -50,8 +50,8 @@ Ansible Automation (Control Node)
 
 ## 📂 Project Structure
 
-```id="lbbhb8"
-LEMP-STACK/
+
+ansible-project/
 │
 ├── ansible.cfg
 ├── inventory
