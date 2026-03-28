@@ -1,0 +1,46 @@
+---
+- name: Configure SFTP for web user (SAFE)
+  hosts: all
+  become: yes
+
+  vars:
+    sftp_user: naja
+    sftp_password: "naja@123"
+
+  tasks:
+
+  # ---------------- SET PASSWORD ----------------
+  - name: Set password for web user
+    shell: echo "{{ sftp_user }}:{{ sftp_password }}" | chpasswd
+
+  # ---------------- ENABLE PASSWORD LOGIN ----------------
+  - name: Enable password authentication
+    lineinfile:
+      path: /etc/ssh/sshd_config
+      regexp: '^PasswordAuthentication'
+      line: 'PasswordAuthentication yes'
+
+  # ---------------- KEEP NORMAL SSH ----------------
+  - name: Ensure SFTP subsystem is enabled
+    lineinfile:
+      path: /etc/ssh/sshd_config
+      regexp: '^Subsystem sftp'
+      line: 'Subsystem sftp internal-sftp'
+
+  # ---------------- CREATE UPLOAD DIRECTORY ----------------
+  - name: Create upload directory
+    file:
+      path: "/home/{{ sftp_user }}/upload"
+      state: directory
+      owner: "{{ sftp_user }}"
+      group: "{{ sftp_user }}"
+      mode: '0755'
+
+  # ---------------- RESTART SSH ----------------
+  - name: Validate SSH config
+    command: sshd -t
+
+  - name: Restart SSH
+    service:
+      name: sshd
+      state: restarted
