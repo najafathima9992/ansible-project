@@ -1,0 +1,72 @@
+- name: Configure SSL only with Certbot on RHEL 9
+  hosts: all
+  become: yes
+
+  vars:
+    domain_name: "najanajafathima.duckdns.org"
+
+  tasks:
+    - name: Install EPEL from URL
+      dnf:
+        name: "https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm"
+        state: present
+        disable_gpg_check: true
+
+    - name: Install Certbot and nginx plugin
+      dnf:
+        name:
+          - certbot
+          - python3-certbot-nginx
+        state: present
+
+    - name: Ensure nginx is started
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Open HTTP service in firewall
+      shell: firewall-cmd --permanent --add-service=http
+      args:
+        executable: /bin/bash
+      register: http_fw
+      failed_when: false
+      changed_when: "'success' in http_fw.stdout or 'ALREADY_ENABLED' in http_fw.stdout"
+
+    - name: Open HTTPS service in firewall
+      shell: firewall-cmd --permanent --add-service=https
+      args:
+        executable: /bin/bash
+      register: https_fw
+      failed_when: false
+      changed_when: "'success' in https_fw.stdout or 'ALREADY_ENABLED' in https_fw.stdout"
+
+    - name: Reload firewalld
+      shell: firewall-cmd --reload
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Obtain SSL certificate using certbot
+      shell: certbot --nginx -d {{ domain_name }} --non-interactive --agree-tos -m admin@{{ domain_name }} --redirect
+      args:
+        executable: /bin/bash
+      register: certbot_output
+      failed_when: false
+      changed_when: "'Congratulations' in certbot_output.stdout or 'successfully received certificate' in certbot_output.stdout"
+
+    - name: Show certbot result
+      debug:
+        var: certbot_output.stdout_lines
+
+    - name: Test certificate renewal
+      shell: certbot renew --dry-run
+      args:
+        executable: /bin/bash
+      register: renew_test
+      failed_when: false
+      changed_when: false
+
+    - name: Show renewal test result
+      debug:
+        var: renew_test.stdout_lines
