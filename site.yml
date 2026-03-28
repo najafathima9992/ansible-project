@@ -1,0 +1,419 @@
+- name: Setup WordPress + phpMyAdmin under user directory
+  hosts: all
+  become: yes
+
+  vars:
+    username: naja
+    website_name: mysite
+    web_root: "/home/{{ username }}/{{ website_name }}/public"
+    phpmyadmin_dir: "{{ web_root }}/phpmyadmin"
+
+    db_name: wordpressdb
+    db_user: wpuser
+    db_password: "naja@123"
+    db_root_password: "naja@123"
+
+    phpmyadmin_version: "5.2.3"
+
+    wp_site_title: "Naja Blog"
+    wp_admin_user: "admin"
+    wp_admin_password: "naja@123"
+    wp_admin_email: "admin@example.com"
+    wp_site_url: "http://{{ ansible_host | default(inventory_hostname) }}"
+
+  tasks:
+
+    - name: Install required packages
+      dnf:
+        name:
+          - nginx
+          - php
+          - php-fpm
+          - php-mysqlnd
+          - php-gd
+          - php-mbstring
+          - php-xml
+          - php-json
+          - php-cli
+          - php-curl
+          - php-zip
+          - mariadb-server
+          - wget
+          - tar
+          - unzip
+          - curl
+          - firewalld
+          - policycoreutils-python-utils
+        state: present
+
+    - name: Start and enable services
+      service:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - nginx
+        - php-fpm
+        - mariadb
+        - firewalld
+
+    - name: Open firewall ports
+      shell: |
+        firewall-cmd --permanent --add-service=http
+        firewall-cmd --permanent --add-service=https
+        firewall-cmd --reload
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Create user
+      user:
+        name: "{{ username }}"
+        shell: /bin/bash
+        state: present
+
+    - name: Create website directory structure
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: '0755'
+      loop:
+        - "/home/{{ username }}"
+        - "/home/{{ username }}/{{ website_name }}"
+        - "{{ web_root }}"
+
+    - name: Fix /home permission
+      file:
+        path: /home
+        mode: '0755'
+
+    - name: Fix user home permission
+      file:
+        path: "/home/{{ username }}"
+        mode: '0755'
+
+    - name: Fix website directory permission
+      file:
+        path: "/home/{{ username }}/{{ website_name }}"
+        mode: '0755'
+        recurse: yes
+
+    - name: Check if MariaDB root password already works
+      shell: mysql -uroot -p'{{ db_root_password }}' -e "SELECT 1;"
+      register: mysql_root_check
+      failed_when: false
+      changed_when: false
+
+    - name: Set MariaDB root password first time
+      shell: |
+        mysql -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ db_root_password }}'; FLUSH PRIVILEGES;"
+      when: mysql_root_check.rc != 0
+      args:
+        executable: /bin/bash
+
+    - name: Remove anonymous MariaDB users
+      shell: |
+        mysql -uroot -p'{{ db_root_password }}' -e "DELETE FROM mysql.user WHERE User=''; FLUSH PRIVILEGES;"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Remove test database
+      shell: |
+        mysql -uroot -p'{{ db_root_password }}' -e "DROP DATABASE IF EXISTS test;"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Create WordPress database
+      shell: |
+        mysql -uroot -p'{{ db_root_password }}' -e "CREATE DATABASE IF NOT EXISTS {{ db_name }};"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Create WordPress DB user and grant privileges
+      shell: |
+        mysql -uroot -p'{{ db_root_password }}' -e "CREATE USER IF NOT EXISTS '{{ db_user }}'@'localhost' IDENTIFIED BY '{{ db_password }}'; GRANT ALL PRIVILEGES ON {{ db_name }}.* TO '{{ db_user }}'@'localhost'; FLUSH PRIVILEGES;"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Download WordPress
+      get_url:
+        url: https://wordpress.org/latest.tar.gz
+        dest: /tmp/wordpress.tar.gz
+        mode: '0644'
+
+    - name: Remove old extracted WordPress folder
+      file:
+        path: /tmp/wordpress
+        state: absent
+
+    - name: Extract WordPress
+      unarchive:
+        src: /tmp/wordpress.tar.gz
+        dest: /tmp
+        remote_src: yes
+
+    - name: Copy WordPress files
+      copy:
+        src: /tmp/wordpress/
+        dest: "{{ web_root }}/"
+        remote_src: yes
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: preserve
+
+    - name: Set WordPress directory permissions
+      shell: |
+        find {{ web_root }} -type d -exec chmod 755 {} \;
+        find {{ web_root }} -type f -exec chmod 644 {} \;
+      args:
+        executable: /bin/bash
+
+    - name: Create wp-config.php
+      copy:
+        dest: "{{ web_root }}/wp-config.php"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: '0640'
+        content: |
+          <?php
+          define( 'DB_NAME', '{{ db_name }}' );
+          define( 'DB_USER', '{{ db_user }}' );
+          define( 'DB_PASSWORD', '{{ db_password }}' );
+          define( 'DB_HOST', 'localhost' );
+          define( 'DB_CHARSET', 'utf8' );
+          define( 'DB_COLLATE', '' );
+
+          define( 'AUTH_KEY',         'key1-change-this' );
+          define( 'SECURE_AUTH_KEY',  'key2-change-this' );
+          define( 'LOGGED_IN_KEY',    'key3-change-this' );
+          define( 'NONCE_KEY',        'key4-change-this' );
+          define( 'AUTH_SALT',        'key5-change-this' );
+          define( 'SECURE_AUTH_SALT', 'key6-change-this' );
+          define( 'LOGGED_IN_SALT',   'key7-change-this' );
+          define( 'NONCE_SALT',       'key8-change-this' );
+
+          $table_prefix = 'wp_';
+          define( 'WP_DEBUG', false );
+
+          if ( ! defined( 'ABSPATH' ) ) {
+              define( 'ABSPATH', _DIR_ . '/' );
+          }
+
+          require_once ABSPATH . 'wp-settings.php';
+
+    - name: Configure PHP-FPM user
+      lineinfile:
+        path: /etc/php-fpm.d/www.conf
+        regexp: '^user ='
+        line: "user = {{ username }}"
+
+    - name: Configure PHP-FPM group
+      lineinfile:
+        path: /etc/php-fpm.d/www.conf
+        regexp: '^group ='
+        line: "group = {{ username }}"
+
+    - name: Configure PHP-FPM listen owner
+      lineinfile:
+        path: /etc/php-fpm.d/www.conf
+        regexp: '^listen.owner ='
+        line: 'listen.owner = nginx'
+
+    - name: Configure PHP-FPM listen group
+      lineinfile:
+        path: /etc/php-fpm.d/www.conf
+        regexp: '^listen.group ='
+        line: 'listen.group = nginx'
+
+    - name: Configure PHP-FPM socket
+      lineinfile:
+        path: /etc/php-fpm.d/www.conf
+        regexp: '^listen ='
+        line: 'listen = /run/php-fpm/www.sock'
+
+    - name: Create PHP session directory
+      file:
+        path: /var/lib/php/session
+        state: directory
+        owner: "{{ username }}"
+        group: nginx
+        mode: '1733'
+
+    - name: Restore SELinux context for PHP session directory
+      shell: |
+        restorecon -Rv /var/lib/php/session || true
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Download WP-CLI
+      get_url:
+        url: https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+        dest: /usr/local/bin/wp
+        mode: '0755'
+
+    - name: Check whether WordPress is already installed
+      shell: |
+        sudo -u {{ username }} /usr/local/bin/wp core is-installed --path={{ web_root }}
+      args:
+        executable: /bin/bash
+      register: wp_installed
+      failed_when: false
+      changed_when: false
+
+    - name: Install WordPress automatically with WP-CLI
+      shell: |
+        sudo -u {{ username }} /usr/local/bin/wp core install \
+          --path={{ web_root }} \
+          --url='{{ wp_site_url }}' \
+          --title='{{ wp_site_title }}' \
+          --admin_user='{{ wp_admin_user }}' \
+          --admin_password='{{ wp_admin_password }}' \
+          --admin_email='{{ wp_admin_email }}' \
+          --skip-email
+      args:
+        executable: /bin/bash
+      when: wp_installed.rc != 0
+
+    - name: Download phpMyAdmin
+      get_url:
+        url: "https://files.phpmyadmin.net/phpMyAdmin/{{ phpmyadmin_version }}/phpMyAdmin-{{ phpmyadmin_version }}-all-languages.zip"
+        dest: /tmp/phpmyadmin.zip
+        mode: '0644'
+
+    - name: Remove old extracted phpMyAdmin temp folder
+      file:
+        path: "/tmp/phpMyAdmin-{{ phpmyadmin_version }}-all-languages"
+        state: absent
+
+    - name: Remove existing phpMyAdmin folder from web root
+      file:
+        path: "{{ phpmyadmin_dir }}"
+        state: absent
+
+    - name: Extract phpMyAdmin
+      unarchive:
+        src: /tmp/phpmyadmin.zip
+        dest: /tmp/
+        remote_src: yes
+
+    - name: Copy phpMyAdmin into website folder
+      copy:
+        src: "/tmp/phpMyAdmin-{{ phpmyadmin_version }}-all-languages/"
+        dest: "{{ phpmyadmin_dir }}/"
+        remote_src: yes
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: preserve
+
+    - name: Create phpMyAdmin tmp directory
+      file:
+        path: "{{ phpmyadmin_dir }}/tmp"
+        state: directory
+        owner: "{{ username }}"
+        group: nginx
+        mode: '0770'
+
+    - name: Create phpMyAdmin config file
+      copy:
+        dest: "{{ phpmyadmin_dir }}/config.inc.php"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: '0644'
+        content: |
+          <?php
+          $cfg['blowfish_secret'] = 'ChangeThisToARandomSecret123456789';
+          $i = 0;
+          $i++;
+          $cfg['Servers'][$i]['auth_type'] = 'cookie';
+          $cfg['Servers'][$i]['host'] = 'localhost';
+          $cfg['Servers'][$i]['compress'] = false;
+          $cfg['Servers'][$i]['AllowNoPassword'] = false;
+          $cfg['TempDir'] = '{{ phpmyadmin_dir }}/tmp';
+
+    - name: Set phpMyAdmin directory permissions
+      shell: |
+        find {{ phpmyadmin_dir }} -type d -exec chmod 755 {} \;
+        find {{ phpmyadmin_dir }} -type f -exec chmod 644 {} \;
+        chmod 770 {{ phpmyadmin_dir }}/tmp
+      args:
+        executable: /bin/bash
+
+    - name: Configure nginx for WordPress and phpMyAdmin in same web root
+      copy:
+        dest: "/etc/nginx/conf.d/{{ website_name }}.conf"
+        mode: '0644'
+        content: |
+          server {
+            listen 80 default_server;
+            server_name _;
+
+            root {{ web_root }};
+            index index.php index.html index.htm;
+
+            location / {
+              try_files $uri $uri/ /index.php?$args;
+            }
+
+            location ~ \.php$ {
+              include fastcgi_params;
+              fastcgi_pass unix:/run/php-fpm/www.sock;
+              fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+              fastcgi_index index.php;
+            }
+
+            location ~ /\.ht {
+              deny all;
+            }
+          }
+
+    - name: Remove default nginx config if exists
+      file:
+        path: /etc/nginx/conf.d/default.conf
+        state: absent
+
+    - name: Remove extra wordpress nginx config if exists
+      file:
+        path: /etc/nginx/conf.d/wordpress.conf
+        state: absent
+
+    - name: Set SELinux context for web root
+      shell: |
+        semanage fcontext -a -t httpd_sys_content_t "{{ web_root }}(/.*)?" || true
+        restorecon -Rv "{{ web_root }}"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Set SELinux writable context for uploads
+      shell: |
+        mkdir -p "{{ web_root }}/wp-content/uploads"
+        semanage fcontext -a -t httpd_sys_rw_content_t "{{ web_root }}/wp-content/uploads(/.*)?" || true
+        restorecon -Rv "{{ web_root }}/wp-content/uploads"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Set SELinux writable context for phpMyAdmin tmp
+      shell: |
+        semanage fcontext -a -t httpd_sys_rw_content_t "{{ phpmyadmin_dir }}/tmp(/.*)?" || true
+        restorecon -Rv "{{ phpmyadmin_dir }}/tmp"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Restart php-fpm
+      service:
+        name: php-fpm
+        state: restarted
+
+    - name: Restart nginx
+      service:
+        name: nginx
+        state: restarted
